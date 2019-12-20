@@ -1,0 +1,8 @@
+iface tun101 inet static
+	pre-up /etc/network/scripts/tun101/up
+	post-down /etc/network/scripts/tun101/down
+	address 172.16.101.254
+	netmask 255.255.255.255
+	pointopoint 172.16.101.1
+	up ip route add 172.16.101.1/32 via 172.16.101.1
+	down ip route del 172.16.101.1/32 via 172.16.101.1

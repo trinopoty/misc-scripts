@@ -1,0 +1,2 @@
+ssh -M -S /etc/network/scripts/tun101/control-socket -f -o "UserKnownHostsFile /dev/null" -o "StrictHostKeyChecking off" -i "/home/trinopoty/.ssh/id_rsa" -w 101:101 root@remote-host 'ifdown tun101; ifup tun101'
+sleep 5
