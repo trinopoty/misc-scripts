@@ -46,8 +46,8 @@ def main():
         csv_writer = csv.writer(csv_file)
         csv_writer.writerow(['#','Data'])
 
-        for i in range(0, 600):
-            prefix = "NITRR{0:03d}".format(i + 1)
+        for i in range(0, 1000):
+            prefix = "HOLI2020-{0:04d}".format(i + 1)
             data = prefix + '_' + ''.join(random.choices(string.ascii_uppercase + string.ascii_lowercase + string.digits, k=6))
 
             file_name = '{0}.png'.format(data)
