@@ -1,0 +1,15 @@
+# iptables
+iptables -t nat -A POSTROUTING -o eth0 -s '10.0.0.0/16' -j MASQUERADE
+
+# sysctl
+echo "1" > /proc/sys/net/ipv4/ip_forward
+
+# /etc/sysctl.conf
+net.ipv4.ip_forward = 1
+
+# Amzn Linux 2
+yum install iptables-services -y
+systemctl enable iptables
+systemctl start iptables
+service iptables save
+
