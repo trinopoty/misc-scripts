@@ -17,3 +17,4 @@ fi
 _addr_ipv6=$(gen_ipv6_addr $_prefix_ipv6)
 
 echo "ifconfig-ipv6-push $_addr_ipv6" > $_config_file
+
