@@ -17,12 +17,13 @@ Parameters:
   BuildImageRepository:
     Type: String
     Description: URI of repository (not tag)
-  BuildMultiArch:
+  BuildArch:
     Type: String
-    Default: false
+    Default: amd64
     AllowedValues:
-      - true
-      - false
+      - amd64
+      - arm64
+      - multi
   BuildStatusReportEnabled:
     Type: String
     Default: false
@@ -40,7 +41,9 @@ Parameters:
     Description: ARN of KMS key used to encrypt credentials (Optional if default key used)
 
 Conditions:
-  CreateMultiArchBuild: !Equals [ Ref: BuildMultiArch, 'true' ]
+  CreateAmd64Build: !Or [ !Equals [ Ref: BuildArch, 'amd64' ], !Equals [ Ref: BuildArch, 'multi' ] ]
+  CreateArm64Build: !Or [ !Equals [ Ref: BuildArch, 'arm64' ], !Equals [ Ref: BuildArch, 'multi' ] ]
+  CreateMultiArchBuild: !Equals [ Ref: BuildArch, 'multi' ]
   CreateBuildStatusReport: !And
     - !Equals [ Ref: BuildStatusReportEnabled, 'true' ]
     - !Equals [ Ref: BuildSource, 'bitbucket' ]
@@ -181,8 +184,9 @@ Resources:
     Properties:
       RetentionInDays: 14
 
-  BuildImageX8664:
+  BuildImageAmd64:
     Type: 'AWS::CodeBuild::Project'
+    Condition: CreateAmd64Build
     Properties:
       ServiceRole: !GetAtt BuildBuildRole.Arn
       Artifacts:
@@ -208,6 +212,7 @@ Resources:
         Type: CODEPIPELINE
   BuildImageArm64:
     Type: 'AWS::CodeBuild::Project'
+    Condition: CreateArm64Build
     Properties:
       ServiceRole: !GetAtt BuildBuildRole.Arn
       Artifacts:
@@ -233,6 +238,7 @@ Resources:
         Type: CODEPIPELINE
   BuildImageManifest:
     Type: 'AWS::CodeBuild::Project'
+    Condition: CreateMultiArchBuild
     Properties:
       ServiceRole: !GetAtt BuildBuildRole.Arn
       Artifacts:
@@ -300,44 +306,53 @@ Resources:
                 DetectChanges: true
         - Name: Build
           Actions:
-            - Name: Build-x86_64
-              ActionTypeId:
-                Category: Build
-                Owner: AWS
-                Provider: CodeBuild
-                Version: 1
-              InputArtifacts:
-                - Name: At_Source
-              OutputArtifacts:
-                - Name: At_Build_x86_64
-              Configuration:
-                ProjectName: !Ref BuildImageX8664
-            - Name: Build-arm64
-              ActionTypeId:
-                Category: Build
-                Owner: AWS
-                Provider: CodeBuild
-                Version: 1
-              InputArtifacts:
-                - Name: At_Source
-              OutputArtifacts:
-                - Name: At_Build_arm64
-              Configuration:
-                ProjectName: !Ref BuildImageArm64
-        - Name: Manifest
-          Actions:
-            - Name: Manifest
-              ActionTypeId:
-                Category: Build
-                Owner: AWS
-                Provider: CodeBuild
-                Version: 1
-              InputArtifacts:
-                - Name: At_Source
-              OutputArtifacts:
-                - Name: At_Build_Manifest
-              Configuration:
-                ProjectName: !Ref BuildImageManifest
+            - !If
+              - CreateAmd64Build
+              - Name: Build-amd64
+                ActionTypeId:
+                  Category: Build
+                  Owner: AWS
+                  Provider: CodeBuild
+                  Version: 1
+                InputArtifacts:
+                  - Name: At_Source
+                OutputArtifacts:
+                  - Name: At_Build_x86_64
+                Configuration:
+                  ProjectName: !Ref BuildImageAmd64
+              - !Ref AWS::NoValue
+            - !If
+              - CreateArm64Build
+              - Name: Build-arm64
+                ActionTypeId:
+                  Category: Build
+                  Owner: AWS
+                  Provider: CodeBuild
+                  Version: 1
+                InputArtifacts:
+                  - Name: At_Source
+                OutputArtifacts:
+                  - Name: At_Build_arm64
+                Configuration:
+                  ProjectName: !Ref BuildImageArm64
+              - !Ref AWS::NoValue
+        - !If
+          - CreateMultiArchBuild
+          - Name: Manifest
+            Actions:
+              - Name: Manifest
+                ActionTypeId:
+                  Category: Build
+                  Owner: AWS
+                  Provider: CodeBuild
+                  Version: 1
+                InputArtifacts:
+                  - Name: At_Source
+                OutputArtifacts:
+                  - Name: At_Build_Manifest
+                Configuration:
+                  ProjectName: !Ref BuildImageManifest
+          - !Ref AWS::NoValue
 
   BuildNotificationTopic:
     Type: 'AWS::SNS::Topic'
