@@ -33,9 +33,6 @@ Parameters:
   BuildStatusReportCredentialsArn:
     Type: String
     Description: ARN of secrets manager secret to provide credentials for build notifications
-  BuildStatusReportCredentialsName:
-    Type: String
-    Description: Name of secrets manager secret to provide credentials for build notifications
   BuildStatusReportCredentialsKmsArn:
     Type: String
     Description: ARN of KMS key used to encrypt credentials (Optional if default key used)
@@ -414,7 +411,6 @@ Resources:
       Role: !GetAtt BuildStatusReportRole.Arn
       Environment:
         Variables:
-          CREDENTIALS: !If [ HasBuildStatusReportCredentials, !Ref BuildStatusReportCredentialsName, !Ref AWS::NoValue ]
           CREDENTIALS_ARN: !If [ HasBuildStatusReportCredentials, !Ref BuildStatusReportCredentialsArn, !Ref AWS::NoValue ]
           SOURCE: !Ref BuildSource
           TABLE: !GetAtt BuildStatusReportTable.Arn
@@ -442,13 +438,15 @@ Resources:
           def get_credentials():
             arn_parser = botocore.utils.ArnParser()
             arn = arn_parser.parse_arn(os.environ['CREDENTIALS_ARN'])
-            secret_name = os.environ['CREDENTIALS']
-
+            
+            if not arn['resource'].startswith('secret:'):
+                raise Exception('Specified credentials arn is invalid.')
+            
             session = boto3.session.Session()
             client = session.client(
               service_name='secretsmanager',
               region_name=arn['region'],)
-            secret_response = client.get_secret_value(SecretId=secret_name)
+            secret_response = client.get_secret_value(SecretId=arn['resource'][7:])
             return json.loads(secret_response['SecretString'])
 
 
