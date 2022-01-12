@@ -17,6 +17,13 @@ Parameters:
   BuildImageRepository:
     Type: String
     Description: URI of repository (not tag)
+  BuildspecInternal:
+    Type: String
+    Default: false
+    Description: Use internal buildspec instead of repository buildspec file
+    AllowedValues:
+      - true
+      - false
   BuildArch:
     Type: String
     Default: amd64
@@ -47,6 +54,7 @@ Conditions:
     - !Not [ !Equals [ Ref: BuildStatusReportCredentialsArn, '' ] ]
   HasBuildStatusReportCredentials: !Not [ !Equals [ Ref: BuildStatusReportCredentialsArn, '' ] ]
   HasBuildStatusReportCredentialsKms: !Not [ !Equals [ Ref: BuildStatusReportCredentialsKmsArn, '' ] ]
+  UseInternalBuildspec: !Equals [ !Ref BuildspecInternal, 'true' ]
 
 Resources:
   # Build pipeline
@@ -207,6 +215,35 @@ Resources:
           Status: ENABLED
       Source:
         Type: CODEPIPELINE
+        BuildSpec: !If
+          - UseInternalBuildspec
+          - !Sub |
+            version: 0.2
+
+            phases:
+              pre_build:
+                commands:
+                  - $(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
+                  - export GIT_TAG=$(git tag --contains | head -1)
+                  - export BUILD_ARCH=$(uname -m)
+                  - '[[ ${!CBARG_MULTIARCH} == 1 ]] && export DOCKER_TAG_VERSION="$GIT_TAG-$BUILD_ARCH" || true'
+                  - '[[ ${!CBARG_MULTIARCH} == 0 ]] && export DOCKER_TAG_VERSION="$GIT_TAG" || true'
+              build:
+                on-failure: ABORT
+                commands:
+                  - docker build -t ${!CBARG_IMAGE_REPO}:latest .
+              post_build:
+                commands:
+                  - '[[ "$GIT_TAG" != "" ]] && docker tag ${!CBARG_IMAGE_REPO}:latest ${!CBARG_IMAGE_REPO}:${!DOCKER_TAG_VERSION} || true'
+                  - '[[ "$GIT_TAG" != "" ]] && docker push ${!CBARG_IMAGE_REPO}:${!DOCKER_TAG_VERSION} || true'
+
+            env:
+              exported-variables:
+                - CODEBUILD_BUILD_NUMBER
+
+            artifacts:
+              files: '**/*'
+          - !Ref AWS::NoValue
   BuildImageArm64:
     Type: 'AWS::CodeBuild::Project'
     Condition: CreateArm64Build
@@ -233,6 +270,35 @@ Resources:
           Status: ENABLED
       Source:
         Type: CODEPIPELINE
+        BuildSpec: !If
+          - UseInternalBuildspec
+          - !Sub |
+            version: 0.2
+
+            phases:
+              pre_build:
+                commands:
+                  - $(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
+                  - export GIT_TAG=$(git tag --contains | head -1)
+                  - export BUILD_ARCH=$(uname -m)
+                  - '[[ ${!CBARG_MULTIARCH} == 1 ]] && export DOCKER_TAG_VERSION="$GIT_TAG-$BUILD_ARCH" || true'
+                  - '[[ ${!CBARG_MULTIARCH} == 0 ]] && export DOCKER_TAG_VERSION="$GIT_TAG" || true'
+              build:
+                on-failure: ABORT
+                commands:
+                  - docker build -t ${!CBARG_IMAGE_REPO}:latest .
+              post_build:
+                commands:
+                  - '[[ "$GIT_TAG" != "" ]] && docker tag ${!CBARG_IMAGE_REPO}:latest ${!CBARG_IMAGE_REPO}:${!DOCKER_TAG_VERSION} || true'
+                  - '[[ "$GIT_TAG" != "" ]] && docker push ${!CBARG_IMAGE_REPO}:${!DOCKER_TAG_VERSION} || true'
+
+            env:
+              exported-variables:
+                - CODEBUILD_BUILD_NUMBER
+
+            artifacts:
+              files: '**/*'
+          - !Ref AWS::NoValue
   BuildImageManifest:
     Type: 'AWS::CodeBuild::Project'
     Condition: CreateMultiArchBuild
