@@ -437,16 +437,17 @@ Resources:
 
           def get_credentials():
             arn_parser = botocore.utils.ArnParser()
-            arn = arn_parser.parse_arn(os.environ['CREDENTIALS_ARN'])
+            arn = os.environ['CREDENTIALS_ARN']
+            arn_parsed = arn_parser.parse_arn(arn)
             
-            if not arn['resource'].startswith('secret:'):
+            if not arn_parsed['resource'].startswith('secret:'):
                 raise Exception('Specified credentials arn is invalid.')
             
             session = boto3.session.Session()
             client = session.client(
               service_name='secretsmanager',
-              region_name=arn['region'],)
-            secret_response = client.get_secret_value(SecretId=arn['resource'][7:])
+              region_name=arn_parsed['region'],)
+            secret_response = client.get_secret_value(SecretId=arn)
             return json.loads(secret_response['SecretString'])
 
 
