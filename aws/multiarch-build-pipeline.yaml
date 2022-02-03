@@ -58,7 +58,7 @@ Conditions:
 
 Resources:
   # Build pipeline
-  BuildBuildRole:
+  BuildRole:
     Type: 'AWS::IAM::Role'
     Properties:
       AssumeRolePolicyDocument:
@@ -68,9 +68,25 @@ Resources:
             Principal:
               Service:
                 - codebuild.amazonaws.com
+                - codepipeline.amazonaws.com
       ManagedPolicyArns:
         - 'arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser'
       Policies:
+        - PolicyName: Common
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 's3:*'
+                Resource:
+                  - !GetAtt BuildBucket.Arn
+                  - !Join [ '', [ !GetAtt BuildBucket.Arn, '/*' ] ]
+              - Effect: Allow
+                Action: codestar-connections:UseConnection
+                Resource: !Ref BuildSourceConnectionArn
+              - Effect: Allow
+                Action: codecommit:GitPull
+                Resource: '*'
         - PolicyName: Build
           PolicyDocument:
             Version: 2012-10-17
@@ -80,36 +96,6 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !GetAtt BuildLogs.Arn
-              - Effect: Allow
-                Action:
-                  - s3:PutObject
-                  - s3:GetObject
-                  - s3:GetObjectVersion
-                  - s3:GetBucketAcl
-                  - s3:GetBucketLocation
-                Resource:
-                  - !GetAtt BuildBucket.Arn
-                  - !Sub
-                    - '${Arn}/*'
-                    - Arn: !GetAtt BuildBucket.Arn
-              - Effect: Allow
-                Action: codestar-connections:UseConnection
-                Resource: !Ref BuildSourceConnectionArn
-              - Effect: Allow
-                Action: codecommit:GitPull
-                Resource: '*'
-
-  BuildPipelineRole:
-    Type: 'AWS::IAM::Role'
-    Properties:
-      AssumeRolePolicyDocument:
-        Statement:
-          - Action: 'sts:AssumeRole'
-            Effect: Allow
-            Principal:
-              Service:
-                - codepipeline.amazonaws.com
-      Policies:
         - PolicyName: Pipeline
           PolicyDocument:
             Version: 2012-10-17
@@ -125,25 +111,12 @@ Resources:
                       - ec2.amazonaws.com
                       - ecs-tasks.amazonaws.com
               - Effect: Allow
-                Action: codestar-connections:UseConnection
-                Resource: !Ref BuildSourceConnectionArn
-              - Effect: Allow
-                Action: codecommit:GitPull
-                Resource: '*'
-              - Effect: Allow
                 Action:
                   - codebuild:BatchGetBuilds
                   - codebuild:StartBuild
                   - codebuild:BatchGetBuildBatches
                   - codebuild:StartBuildBatch
                 Resource: '*'
-              - Effect: Allow
-                Action: 's3:*'
-                Resource:
-                  - !GetAtt BuildBucket.Arn
-                  - !Sub
-                    - '${Arn}/*'
-                    - Arn: !GetAtt BuildBucket.Arn
 
   BuildStatusReportRole:
     Type: 'AWS::IAM::Role'
@@ -193,7 +166,7 @@ Resources:
     Type: 'AWS::CodeBuild::Project'
     Condition: CreateAmd64Build
     Properties:
-      ServiceRole: !GetAtt BuildBuildRole.Arn
+      ServiceRole: !GetAtt BuildRole.Arn
       Artifacts:
         Type: CODEPIPELINE
       Environment:
@@ -248,7 +221,7 @@ Resources:
     Type: 'AWS::CodeBuild::Project'
     Condition: CreateArm64Build
     Properties:
-      ServiceRole: !GetAtt BuildBuildRole.Arn
+      ServiceRole: !GetAtt BuildRole.Arn
       Artifacts:
         Type: CODEPIPELINE
       Environment:
@@ -303,7 +276,7 @@ Resources:
     Type: 'AWS::CodeBuild::Project'
     Condition: CreateMultiArchBuild
     Properties:
-      ServiceRole: !GetAtt BuildBuildRole.Arn
+      ServiceRole: !GetAtt BuildRole.Arn
       Artifacts:
         Type: CODEPIPELINE
       Environment:
@@ -346,7 +319,7 @@ Resources:
   BuildPipeline:
     Type: 'AWS::CodePipeline::Pipeline'
     Properties:
-      RoleArn: !GetAtt BuildPipelineRole.Arn
+      RoleArn: !GetAtt BuildRole.Arn
       ArtifactStore:
         Type: S3
         Location: !Ref BuildBucket
