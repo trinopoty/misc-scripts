@@ -2,10 +2,19 @@ import base64
 import hashlib
 import io
 import json
+import re
 from urllib.parse import parse_qs
 
 import requests
 from PIL import Image
+
+
+whitelisted_headers = [
+    'last-modified',
+    'cache-control',
+    'content-type',
+    'etag',
+]
 
 
 def get_size(query):
@@ -55,12 +64,10 @@ def build_response(response, content, success):
     
     headers = {}
     for k in response.headers:
-        if success and k.lower() in ['content-length', 'content-type', 'etag']:
-            continue
-
-        headers[k.lower()] = [{
-            'value': response.headers[k],
-        }]
+        if k.lower() in whitelisted_headers:
+            headers[k.lower()] = [{
+                'value': response.headers[k],
+            }]
     
     if success:
         headers['etag'] = [{
