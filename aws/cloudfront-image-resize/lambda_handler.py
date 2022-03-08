@@ -102,7 +102,7 @@ def lambda_handler(event, context):
 
             file_ext = os.path.splitext(origin_request['uri'])
 
-            if (origin_request['method'].upper() == 'GET') and (size is not None) and (len(file_ext) == 2) and (file_ext[1].lower() in ['png', 'jpg', 'jpeg', 'jfif']):
+            if (origin_request['method'].upper() == 'GET') and (size is not None) and (len(file_ext) == 2) and (file_ext[1].lower() in ['.png', '.jpg', '.jpeg', '.jfif']):
                 headers = parse_headers(origin_request['headers'])
                 query = '?{0}'.format(origin_request['querystring']) if len(origin_request['querystring']) > 0 else ''
                 
