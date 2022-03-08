@@ -2,6 +2,7 @@ import base64
 import hashlib
 import io
 import json
+import os.path
 import re
 from urllib.parse import parse_qs
 
@@ -99,7 +100,9 @@ def lambda_handler(event, context):
             except:
                 size = None
 
-            if origin_request['method'].upper() == 'GET' and size is not None and (origin_request['uri'].endswith('.png') or origin_request['uri'].endswith('.jpg') or origin_request['uri'].endswith('.jpeg')):
+            file_ext = os.path.splitext(origin_request['uri'])
+
+            if (origin_request['method'].upper() == 'GET') and (size is not None) and (len(file_ext) == 2) and (file_ext[1].lower() in ['png', 'jpg', 'jpeg', 'jfif']):
                 headers = parse_headers(origin_request['headers'])
                 query = '?{0}'.format(origin_request['querystring']) if len(origin_request['querystring']) > 0 else ''
                 
