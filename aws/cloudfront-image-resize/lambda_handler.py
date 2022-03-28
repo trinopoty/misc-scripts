@@ -38,6 +38,8 @@ def resize_image(image_bytes, size):
 
     image.thumbnail((thumb_w, thumb_h,))
     output_bytes = io.BytesIO()
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
     image.save(output_bytes, format='PNG')
     return output_bytes.getvalue()
 
