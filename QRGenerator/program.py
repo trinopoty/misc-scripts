@@ -18,21 +18,21 @@ def make_qr(data):
 
 def make_qr_with_text(text, data):
     text_space = 40
-    
+
     img = make_qr(data)
     target_size = (img.size[0], img.size[1] + text_space)
     target_img = Image.new('RGBA', target_size, (255,255,255,0))
-    
+
     draw = ImageDraw.Draw(target_img)
-    
-    text_font = ImageFont.truetype("arial.ttf", 30)
+
+    text_font = ImageFont.truetype("Roboto-Regular.ttf", 30)
     text_size = draw.textsize(text, font=text_font)
     text_origin = [(img.size[0] / 2) - (text_size[0] / 2), img.size[1]]
-    
+
     draw.rectangle([(0, 0), target_size], 'white')
     target_img.paste(img, [0,0])
     draw.text(text_origin, text, 'black', font=text_font)
-    
+
     return target_img
 
 def main():
@@ -68,4 +68,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
