@@ -1,0 +1,283 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  BuildStatusReportCredentialsArn:
+    Type: String
+    Description: ARN of secrets manager secret to provide credentials for build notifications
+  BuildStatusReportCredentialsKmsArn:
+    Type: String
+    Description: ARN of KMS key used to encrypt credentials (Optional if default key used)
+
+Resources:
+  BuildNotificationTopic:
+    Type: 'AWS::SNS::Topic'
+
+  BuildNotificationTopicPolicy:
+    Type: 'AWS::SNS::TopicPolicy'
+    Properties:
+      Topics:
+        - !Ref BuildNotificationTopic
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: sns:Publish
+            Resource: !Ref BuildNotificationTopic
+            Principal:
+              Service: codestar-notifications.amazonaws.com
+
+  BuildStatusReportTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      TimeToLiveSpecification:
+        Enabled: true
+        AttributeName: ttl
+      AttributeDefinitions:
+        - AttributeName: executionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: executionId
+          KeyType: HASH
+
+  BuildStatusReportRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: BuildStatusReporter
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                  - secretsmanager:GetSecretValue
+                  - kms:Decrypt
+                Resource:
+                  - !GetAtt BuildStatusReportTable.Arn
+                  - !Ref BuildStatusReportCredentialsArn
+                  - !Ref BuildStatusReportCredentialsKmsArn
+              - Effect: Allow
+                Action: codepipeline:ListTagsForResource
+                Resource: '*'
+
+  BuildStatusReportFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt BuildStatusReportRole.Arn
+      Environment:
+        Variables:
+          CREDENTIALS_ARN: !Ref BuildStatusReportCredentialsArn
+          TABLE: !GetAtt BuildStatusReportTable.Arn
+      Code:
+        ZipFile: |
+          import base64
+          import json
+          import os
+          from datetime import datetime, timedelta
+          from urllib import request
+          from urllib.parse import urlparse, parse_qs
+
+          import boto3
+          import botocore
+
+
+          def get_codepipeline_client():
+            session = boto3.session.Session()
+            return session.client(service_name='codepipeline')
+
+
+          def get_dynamodb_client():
+            session = boto3.session.Session()
+            return session.client(service_name='dynamodb')
+
+
+          def get_dynamodb_table_name():
+            arn_parser = botocore.utils.ArnParser()
+            arn = arn_parser.parse_arn(os.environ['TABLE'])
+            table_name = arn['resource'][6:]
+            return table_name
+
+
+          def get_credentials():
+            arn_parser = botocore.utils.ArnParser()
+            arn = os.environ['CREDENTIALS_ARN']
+            arn_parsed = arn_parser.parse_arn(arn)
+          
+            if not arn_parsed['resource'].startswith('secret:'):
+                raise Exception('Specified credentials arn is invalid.')
+          
+            session = boto3.session.Session()
+            client = session.client(
+              service_name='secretsmanager',
+              region_name=arn_parsed['region'],)
+            secret_response = client.get_secret_value(SecretId=arn)
+            return json.loads(secret_response['SecretString'])
+
+
+          def report_bitbucket_build(execution_id, repository_id, commit_hash, state, url, report_key):
+            credentials = get_credentials()
+            auth_header = 'Basic {0}'.format(
+              base64.b64encode(
+                '{0}:{1}'.format(
+                  credentials['BITBUCKET_USERNAME'],
+                  credentials['BITBUCKET_PASSWORD']).encode('utf8')).decode('utf8'))
+
+            try:
+              req_url = 'https://api.bitbucket.org/2.0/repositories/{0}/commit/{1}/statuses/build'.format(repository_id, commit_hash)
+              req = request.Request(req_url, data=json.dumps({
+                'state': state.upper(),
+                'key': report_key,
+                'name': report_key,
+                'url': url,
+                'description': '',
+              }).encode('utf8'), headers={
+                'Content-Type': 'application/json',
+                'Authorization': auth_header,
+              })
+              res = request.urlopen(req)
+            except urllib.error.HTTPError as e:
+              print('Unable to report build status for execution({0})'.format(execution_id))
+
+
+          def process_source(message):
+            source_type = json.loads(message['detail']['execution-result']['external-execution-summary'])['ProviderType'].lower()
+            execution_id = message['detail']['execution-id']
+            execution_url = message['detail']['execution-result']['external-execution-url']
+            execution_url_query = parse_qs(urlparse(execution_url).query)
+
+            repository_id = execution_url_query['FullRepositoryId'][0]
+            commit_hash = execution_url_query['Commit'][0]
+
+            # Get pipeline name
+            pipeline_arn = None
+            report_key = 'CodePipeline'
+
+            for item in message['resources']:
+              if ':codepipeline:' in item:
+                pipeline_arn = item
+                break
+
+            if pipeline_arn is not None:
+              codepipeline = get_codepipeline_client()
+              tags_response = codepipeline.list_tags_for_resource(resourceArn=pipeline_arn)
+              for item in tags_response['tags']:
+                if item['key'] == 'AppDomain':
+                  report_key = item['value']
+
+            # Put record in DynamoDB
+            dynamodb = get_dynamodb_client()
+            table_name = get_dynamodb_table_name()
+            dynamodb.put_item(
+              TableName=table_name,
+              Item={
+                'executionId': {'S': execution_id},
+                'sourceType': {'S': source_type},
+                'repository': {'S': repository_id},
+                'commitHash': {'S': commit_hash},
+                'buildUrl': {'S': execution_url},
+                'reportKey': {'S': report_key},
+                'ttl': {'N': str(int((datetime.now() + timedelta(days=7)).timestamp()))},
+              })
+
+            # Report build
+            if source_type == 'bitbucket':
+              report_bitbucket_build(
+                execution_id,
+                repository_id,
+                commit_hash,
+                'INPROGRESS',
+                execution_url,
+                report_key)
+
+
+          def report_build_status(message):
+            execution_id = message['detail']['execution-id']
+            state = message['detail']['state']
+
+            dynamodb = get_dynamodb_client()
+            table_name = get_dynamodb_table_name()
+            item_response = dynamodb.query(
+              TableName=table_name,
+              KeyConditionExpression='executionId = :executionId',
+              ExpressionAttributeValues={ ':executionId': { 'S': execution_id } },)
+
+            if item_response['Count'] > 0:
+              item = item_response['Items'][0]
+              repository_id = item['repository']['S']
+              source_type = item['sourceType']['S']
+              commit_hash = item['commitHash']['S']
+              build_url = item['buildUrl']['S']
+              report_key = item['reportKey']['S'] if 'reportKey' in item else 'CodePipeline'
+
+              if source_type == 'bitbucket':
+                build_status = {
+                  'STARTED': 'INPROGRESS',
+                  'SUCCEEDED': 'SUCCESSFUL',
+                  'FAILED': 'FAILED',
+                }[state]
+
+                report_bitbucket_build(
+                  execution_id,
+                  repository_id,
+                  commit_hash,
+                  build_status,
+                  build_url, 
+                  report_key)
+
+
+          def process_record(record):
+            if 'Sns' in record:
+              message = json.loads(record['Sns']['Message'])
+              if message['detailType'] == 'CodePipeline Action Execution State Change':
+                execution_id = message['detail']['execution-id']
+                stage = message['detail']['stage']
+                action = message['detail']['action']
+                state = message['detail']['state']
+
+                if action == 'Source' and state == 'SUCCEEDED':
+                  process_source(message)
+              elif message['detailType'] == 'CodePipeline Pipeline Execution State Change':
+                report_build_status(message)
+
+
+          def lambda_handler(event, context):
+            if event is not None and 'Records' in event:
+              for item in event['Records']:
+                process_record(item)
+
+  BuildStatusReportInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt BuildStatusReportFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref BuildNotificationTopic
+
+  BuildNotificationStatusReportSubscription:
+    Type: 'AWS::SNS::Subscription'
+    Properties:
+      TopicArn: !Ref BuildNotificationTopic
+      Protocol: lambda
+      Endpoint: !GetAtt BuildStatusReportFunction.Arn
+
+Outputs:
+  BuildStatusNotificationTopic:
+    Value: !Ref BuildNotificationTopic

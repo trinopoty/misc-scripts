@@ -1,9 +1,4 @@
 Parameters:
-  BuildSource:
-    Type: String
-    Default: bitbucket
-    AllowedValues:
-      - bitbucket
   BuildSourceRepository:
     Type: String
     Description: ID of repository to build
@@ -31,32 +26,33 @@ Parameters:
       - amd64
       - arm64
       - multi
-  BuildStatusReportEnabled:
+
+  ExternalBuildBucket:
     Type: String
-    Default: false
-    AllowedValues:
-      - true
-      - false
-  BuildStatusReportCredentialsArn:
+    Default: ''
+  BuildStatusReportSnsTopic:
     Type: String
-    Description: ARN of secrets manager secret to provide credentials for build notifications
-  BuildStatusReportCredentialsKmsArn:
-    Type: String
-    Description: ARN of KMS key used to encrypt credentials (Optional if default key used)
+    Default: ''
 
 Conditions:
+  CreateBuildBucket: !Equals [ '', !Ref ExternalBuildBucket ]
+  EnableBuildStatusReport: !Equals [ '', !Ref BuildStatusReportSnsTopic ]
+
   CreateAmd64Build: !Or [ !Equals [ Ref: BuildArch, 'amd64' ], !Equals [ Ref: BuildArch, 'multi' ] ]
   CreateArm64Build: !Or [ !Equals [ Ref: BuildArch, 'arm64' ], !Equals [ Ref: BuildArch, 'multi' ] ]
   CreateMultiArchBuild: !Equals [ Ref: BuildArch, 'multi' ]
-  CreateBuildStatusReport: !And
-    - !Equals [ Ref: BuildStatusReportEnabled, 'true' ]
-    - !Equals [ Ref: BuildSource, 'bitbucket' ]
-    - !Not [ !Equals [ Ref: BuildStatusReportCredentialsArn, '' ] ]
-  HasBuildStatusReportCredentials: !Not [ !Equals [ Ref: BuildStatusReportCredentialsArn, '' ] ]
-  HasBuildStatusReportCredentialsKms: !Not [ !Equals [ Ref: BuildStatusReportCredentialsKmsArn, '' ] ]
   UseInternalBuildspec: !Equals [ !Ref BuildspecInternal, 'true' ]
 
 Resources:
+  BuildBucket:
+    Type: 'AWS::S3::Bucket'
+    Condition: CreateBuildBucket
+
+  BuildLogs:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      RetentionInDays: 14
+
   # Build pipeline
   BuildRole:
     Type: 'AWS::IAM::Role'
@@ -79,8 +75,8 @@ Resources:
               - Effect: Allow
                 Action: 's3:*'
                 Resource:
-                  - !GetAtt BuildBucket.Arn
-                  - !Join [ '', [ !GetAtt BuildBucket.Arn, '/*' ] ]
+                  - !If [ CreateBuildBucket, !GetAtt BuildBucket.Arn, !Sub 'arn:aws:s3:::${ExternalBuildBucket}' ]
+                  - !If [ CreateBuildBucket, !Sub '${BuildBucket.Arn}/*', !Sub 'arn:aws:s3:::${ExternalBuildBucket}' ]
               - Effect: Allow
                 Action: codestar-connections:UseConnection
                 Resource: !Ref BuildSourceConnectionArn
@@ -118,50 +114,6 @@ Resources:
                   - codebuild:StartBuildBatch
                 Resource: '*'
 
-  BuildStatusReportRole:
-    Type: 'AWS::IAM::Role'
-    Condition: CreateBuildStatusReport
-    Properties:
-      AssumeRolePolicyDocument:
-        Statement:
-          - Action: 'sts:AssumeRole'
-            Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-      Policies:
-        - PolicyName: BuildStatusReporter
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action: logs:CreateLogGroup
-                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*'
-              - Effect: Allow
-                Action:
-                  - dynamodb:PutItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:GetItem
-                  - dynamodb:Query
-                  - dynamodb:UpdateItem
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                  - secretsmanager:GetSecretValue
-                  - kms:Decrypt
-                Resource:
-                  - !GetAtt BuildStatusReportTable.Arn
-                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*:*'
-                  - !If [ HasBuildStatusReportCredentials, !Ref BuildStatusReportCredentialsArn, !Ref AWS::NoValue ]
-                  - !If [ HasBuildStatusReportCredentialsKms, !Ref BuildStatusReportCredentialsKmsArn, !Ref AWS::NoValue ]
-
-  BuildBucket:
-    Type: 'AWS::S3::Bucket'
-
-  BuildLogs:
-    Type: 'AWS::Logs::LogGroup'
-    Properties:
-      RetentionInDays: 14
-
   BuildImageAmd64:
     Type: 'AWS::CodeBuild::Project'
     Condition: CreateAmd64Build
@@ -190,7 +142,7 @@ Resources:
         Type: CODEPIPELINE
         BuildSpec: !If
           - UseInternalBuildspec
-          - !Sub |
+          - |
             version: 0.2
 
             phases:
@@ -199,16 +151,16 @@ Resources:
                   - $(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
                   - export GIT_TAG=$(git tag --contains | head -1)
                   - export BUILD_ARCH=$(uname -m)
-                  - '[[ ${!CBARG_MULTIARCH} == 1 ]] && export DOCKER_TAG_VERSION="$GIT_TAG-$BUILD_ARCH" || true'
-                  - '[[ ${!CBARG_MULTIARCH} == 0 ]] && export DOCKER_TAG_VERSION="$GIT_TAG" || true'
+                  - '[[ ${CBARG_MULTIARCH} == 1 ]] && export DOCKER_TAG_VERSION="$GIT_TAG-$BUILD_ARCH" || true'
+                  - '[[ ${CBARG_MULTIARCH} == 0 ]] && export DOCKER_TAG_VERSION="$GIT_TAG" || true'
               build:
                 on-failure: ABORT
                 commands:
-                  - docker build -t ${!CBARG_IMAGE_REPO}:latest .
+                  - docker build -t ${CBARG_IMAGE_REPO}:latest .
               post_build:
                 commands:
-                  - '[[ "$GIT_TAG" != "" ]] && docker tag ${!CBARG_IMAGE_REPO}:latest ${!CBARG_IMAGE_REPO}:${!DOCKER_TAG_VERSION} || true'
-                  - '[[ "$GIT_TAG" != "" ]] && docker push ${!CBARG_IMAGE_REPO}:${!DOCKER_TAG_VERSION} || true'
+                  - '[[ "$GIT_TAG" != "" ]] && docker tag ${CBARG_IMAGE_REPO}:latest ${CBARG_IMAGE_REPO}:${DOCKER_TAG_VERSION} || true'
+                  - '[[ "$GIT_TAG" != "" ]] && docker push ${CBARG_IMAGE_REPO}:${DOCKER_TAG_VERSION} || true'
 
             env:
               exported-variables:
@@ -217,6 +169,7 @@ Resources:
             artifacts:
               files: '**/*'
           - !Ref AWS::NoValue
+
   BuildImageArm64:
     Type: 'AWS::CodeBuild::Project'
     Condition: CreateArm64Build
@@ -245,7 +198,7 @@ Resources:
         Type: CODEPIPELINE
         BuildSpec: !If
           - UseInternalBuildspec
-          - !Sub |
+          - |
             version: 0.2
 
             phases:
@@ -254,16 +207,16 @@ Resources:
                   - $(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
                   - export GIT_TAG=$(git tag --contains | head -1)
                   - export BUILD_ARCH=$(uname -m)
-                  - '[[ ${!CBARG_MULTIARCH} == 1 ]] && export DOCKER_TAG_VERSION="$GIT_TAG-$BUILD_ARCH" || true'
-                  - '[[ ${!CBARG_MULTIARCH} == 0 ]] && export DOCKER_TAG_VERSION="$GIT_TAG" || true'
+                  - '[[ ${CBARG_MULTIARCH} == 1 ]] && export DOCKER_TAG_VERSION="$GIT_TAG-$BUILD_ARCH" || true'
+                  - '[[ ${CBARG_MULTIARCH} == 0 ]] && export DOCKER_TAG_VERSION="$GIT_TAG" || true'
               build:
                 on-failure: ABORT
                 commands:
-                  - docker build -t ${!CBARG_IMAGE_REPO}:latest .
+                  - docker build -t ${CBARG_IMAGE_REPO}:latest .
               post_build:
                 commands:
-                  - '[[ "$GIT_TAG" != "" ]] && docker tag ${!CBARG_IMAGE_REPO}:latest ${!CBARG_IMAGE_REPO}:${!DOCKER_TAG_VERSION} || true'
-                  - '[[ "$GIT_TAG" != "" ]] && docker push ${!CBARG_IMAGE_REPO}:${!DOCKER_TAG_VERSION} || true'
+                  - '[[ "$GIT_TAG" != "" ]] && docker tag ${CBARG_IMAGE_REPO}:latest ${CBARG_IMAGE_REPO}:${DOCKER_TAG_VERSION} || true'
+                  - '[[ "$GIT_TAG" != "" ]] && docker push ${CBARG_IMAGE_REPO}:${DOCKER_TAG_VERSION} || true'
 
             env:
               exported-variables:
@@ -272,6 +225,7 @@ Resources:
             artifacts:
               files: '**/*'
           - !Ref AWS::NoValue
+
   BuildImageManifest:
     Type: 'AWS::CodeBuild::Project'
     Condition: CreateMultiArchBuild
@@ -295,7 +249,7 @@ Resources:
           Status: ENABLED
       Source:
         Type: CODEPIPELINE
-        BuildSpec: !Sub |
+        BuildSpec: |
           version: 0.2
 
           phases:
@@ -307,14 +261,14 @@ Resources:
               on-failure: ABORT
               commands:
                 - export DOCKER_CLI_EXPERIMENTAL=enabled
-                - '[[ "$GIT_TAG" != "" ]] && docker pull ${!CBARG_IMAGE_REPO}:${!GIT_TAG}-x86_64 || true'
-                - '[[ "$GIT_TAG" != "" ]] && docker pull ${!CBARG_IMAGE_REPO}:${!GIT_TAG}-aarch64 || true'
-                - '[[ "$GIT_TAG" != "" ]] && docker manifest create ${!CBARG_IMAGE_REPO}:${!GIT_TAG} ${!CBARG_IMAGE_REPO}:${!GIT_TAG}-x86_64 ${!CBARG_IMAGE_REPO}:${!GIT_TAG}-aarch64 || true'
-                - '[[ "$GIT_TAG" != "" ]] && docker manifest annotate --arch amd64 ${!CBARG_IMAGE_REPO}:${!GIT_TAG} ${!CBARG_IMAGE_REPO}:${!GIT_TAG}-x86_64 || true'
-                - '[[ "$GIT_TAG" != "" ]] && docker manifest annotate --arch arm64 ${!CBARG_IMAGE_REPO}:${!GIT_TAG} ${!CBARG_IMAGE_REPO}:${!GIT_TAG}-aarch64 || true'
+                - '[[ "$GIT_TAG" != "" ]] && docker pull ${CBARG_IMAGE_REPO}:${GIT_TAG}-x86_64 || true'
+                - '[[ "$GIT_TAG" != "" ]] && docker pull ${CBARG_IMAGE_REPO}:${GIT_TAG}-aarch64 || true'
+                - '[[ "$GIT_TAG" != "" ]] && docker manifest create ${CBARG_IMAGE_REPO}:${GIT_TAG} ${CBARG_IMAGE_REPO}:${GIT_TAG}-x86_64 ${CBARG_IMAGE_REPO}:${GIT_TAG}-aarch64 || true'
+                - '[[ "$GIT_TAG" != "" ]] && docker manifest annotate --arch amd64 ${CBARG_IMAGE_REPO}:${GIT_TAG} ${CBARG_IMAGE_REPO}:${GIT_TAG}-x86_64 || true'
+                - '[[ "$GIT_TAG" != "" ]] && docker manifest annotate --arch arm64 ${CBARG_IMAGE_REPO}:${GIT_TAG} ${CBARG_IMAGE_REPO}:${GIT_TAG}-aarch64 || true'
             post_build:
               commands:
-                - '[[ "$GIT_TAG" != "" ]] && docker manifest push ${!CBARG_IMAGE_REPO}:${!GIT_TAG} || true'
+                - '[[ "$GIT_TAG" != "" ]] && docker manifest push ${CBARG_IMAGE_REPO}:${GIT_TAG} || true'
 
   BuildPipeline:
     Type: 'AWS::CodePipeline::Pipeline'
@@ -322,7 +276,7 @@ Resources:
       RoleArn: !GetAtt BuildRole.Arn
       ArtifactStore:
         Type: S3
-        Location: !Ref BuildBucket
+        Location: !If [ CreateBuildBucket, !Ref BuildBucket, !Ref ExternalBuildBucket ]
       Stages:
         - Name: Source
           Actions:
@@ -390,222 +344,21 @@ Resources:
                   ProjectName: !Ref BuildImageManifest
           - !Ref AWS::NoValue
 
-  BuildNotificationTopic:
-    Type: 'AWS::SNS::Topic'
-    Condition: CreateBuildStatusReport
-
-  BuildNotificationTopicPolicy:
-    Type: 'AWS::SNS::TopicPolicy'
-    Condition: CreateBuildStatusReport
-    Properties:
-      Topics:
-        - !Ref BuildNotificationTopic
-      PolicyDocument:
-        Version: 2008-10-17
-        Statement:
-          - Effect: Allow
-            Action: sns:Publish
-            Resource: !Ref BuildNotificationTopic
-            Principal:
-              Service: codestar-notifications.amazonaws.com
-
   BuildNotificationRule:
     Type: 'AWS::CodeStarNotifications::NotificationRule'
-    Condition: CreateBuildStatusReport
+    Condition: EnableBuildStatusReport
     Properties:
       DetailType: FULL
       EventTypeIds:
         - codepipeline-pipeline-action-execution-succeeded
         - codepipeline-pipeline-action-execution-failed
         - codepipeline-pipeline-action-execution-canceled
-        - codepipeline-pipeline-action-execution-started
+        - codepipeline-pipeline-pipeline-execution-started
+        - codepipeline-pipeline-pipeline-execution-failed
+        - codepipeline-pipeline-pipeline-execution-succeeded
+        - codepipeline-pipeline-pipeline-execution-canceled
       Name: !Sub '${AWS::StackName}-Build-Notification'
-      Resource: !Sub
-        - 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
-        - Pipeline: !Ref BuildPipeline
+      Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${BuildPipeline}'
       Targets:
         - TargetType: SNS
-          TargetAddress: !Ref BuildNotificationTopic
-
-  BuildStatusReportTable:
-    Type: 'AWS::DynamoDB::Table'
-    Condition: CreateBuildStatusReport
-    Properties:
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: executionId
-          AttributeType: S
-      KeySchema:
-        - AttributeName: executionId
-          KeyType: HASH
-
-  BuildStatusReportFunction:
-    Type: 'AWS::Lambda::Function'
-    Condition: CreateBuildStatusReport
-    Properties:
-      Runtime: python3.9
-      Handler: index.lambda_handler
-      MemorySize: 128
-      Timeout: 10
-      Role: !GetAtt BuildStatusReportRole.Arn
-      Environment:
-        Variables:
-          CREDENTIALS_ARN: !If [ HasBuildStatusReportCredentials, !Ref BuildStatusReportCredentialsArn, !Ref AWS::NoValue ]
-          SOURCE: !Ref BuildSource
-          TABLE: !GetAtt BuildStatusReportTable.Arn
-      Code:
-        ZipFile: |
-          import base64
-          import json
-          import os
-          from urllib import request
-          from urllib.parse import urlparse, parse_qs
-
-          import boto3
-          import botocore
-
-
-          def get_dynamodb_client():
-            arn_parser = botocore.utils.ArnParser()
-            arn = arn_parser.parse_arn(os.environ['TABLE'])
-            table_name = arn['resource'][6:]
-
-            session = boto3.session.Session()
-            return session.client(service_name='dynamodb', region_name=arn['region'],), table_name
-
-
-          def get_credentials():
-            arn_parser = botocore.utils.ArnParser()
-            arn = os.environ['CREDENTIALS_ARN']
-            arn_parsed = arn_parser.parse_arn(arn)
-            
-            if not arn_parsed['resource'].startswith('secret:'):
-                raise Exception('Specified credentials arn is invalid.')
-            
-            session = boto3.session.Session()
-            client = session.client(
-              service_name='secretsmanager',
-              region_name=arn_parsed['region'],)
-            secret_response = client.get_secret_value(SecretId=arn)
-            return json.loads(secret_response['SecretString'])
-
-
-          def report_bitbucket_build(execution_id, repository_id, commit_hash, state, key, name, url):
-            credentials = get_credentials()
-            auth_header = 'Basic {0}'.format(
-              base64.b64encode(
-                '{0}:{1}'.format(
-                  credentials['BITBUCKET_USERNAME'],
-                  credentials['BITBUCKET_PASSWORD']).encode('utf8')).decode('utf8'))
-
-            try:
-              req_url = 'https://api.bitbucket.org/2.0/repositories/{0}/commit/{1}/statuses/build'.format(repository_id, commit_hash)
-              req = request.Request(req_url, data=json.dumps({
-                'state': state.upper(),
-                'key': key,
-                'name': name,
-                'url': url,
-                'description': '',
-              }).encode('utf8'), headers={
-                'Content-Type': 'application/json',
-                'Authorization': auth_header,
-              })
-              res = request.urlopen(req)
-            except urllib.error.HTTPError as e:
-              print('Unable to report build status for execution({0})'.format(execution_id))
-
-
-          def process_source(message):
-            source_type = os.environ['SOURCE']
-            if source_type.lower() == 'bitbucket':
-              execution_id = message['detail']['execution-id']
-              execution_url = urlparse(message['detail']['execution-result']['external-execution-url'])
-              execution_url_query = parse_qs(execution_url.query)
-
-              repository_id = execution_url_query['FullRepositoryId'][0]
-              commit_hash = execution_url_query['Commit'][0]
-
-              # Put record in DynamoDB
-              dynamodb, table_name = get_dynamodb_client()
-              dynamodb.put_item(
-                TableName=table_name,
-                Item={
-                  'executionId': { 'S': execution_id },
-                  'sourceType': { 'S': 'bitbucket' },
-                  'repository': { 'S': repository_id },
-                  'commitHash': { 'S': commit_hash },
-                  'buildUrl': { 'S': message['detail']['execution-result']['external-execution-url'] },
-                })
-
-
-          def report_build_status(message):
-            execution_id = message['detail']['execution-id']
-            action = message['detail']['action']
-            state = message['detail']['state']
-
-            dynamodb, table_name = get_dynamodb_client()
-            item_response = dynamodb.query(
-              TableName=table_name,
-              KeyConditionExpression='executionId = :executionId',
-              ExpressionAttributeValues={ ':executionId': { 'S': execution_id } },)
-            if item_response['Count'] > 0:
-              item = item_response['Items'][0]
-              source_type = item['sourceType']['S']
-              repository_id = item['repository']['S']
-              commit_hash = item['commitHash']['S']
-              build_url = item['buildUrl']['S']
-
-              build_status = {
-                'STARTED': 'INPROGRESS',
-                'SUCCEEDED': 'SUCCESSFUL',
-                'FAILED': 'FAILED',
-              }[state]
-
-              report_bitbucket_build(
-                execution_id,
-                repository_id,
-                commit_hash,
-                build_status,
-                action,
-                '{0}-{1}'.format(action, execution_id),
-                build_url)
-
-
-          def process_record(record):
-            get_credentials()
-
-            if 'Sns' in record:
-              message = json.loads(record['Sns']['Message'])
-              if message['detailType'] == 'CodePipeline Action Execution State Change':
-                execution_id = message['detail']['execution-id']
-                stage = message['detail']['stage']
-                action = message['detail']['action']
-                state = message['detail']['state']
-
-                if action == 'Source' and state == 'SUCCEEDED':
-                  process_source(message)
-                elif stage == 'Build' or stage == 'Manifest':
-                  report_build_status(message)
-
-
-          def lambda_handler(event, context):
-            if event is not None and 'Records' in event:
-              for item in event['Records']:
-                process_record(item)
-
-  BuildStatusReportInvokePermission:
-    Type: 'AWS::Lambda::Permission'
-    Condition: CreateBuildStatusReport
-    Properties:
-      FunctionName: !GetAtt BuildStatusReportFunction.Arn
-      Action: lambda:InvokeFunction
-      Principal: sns.amazonaws.com
-      SourceArn: !Ref BuildNotificationTopic
-
-  BuildNotificationStatusReportSubscription:
-    Type: 'AWS::SNS::Subscription'
-    Condition: CreateBuildStatusReport
-    Properties:
-      TopicArn: !Ref BuildNotificationTopic
-      Protocol: lambda
-      Endpoint: !GetAtt BuildStatusReportFunction.Arn
+          TargetAddress: !Ref BuildStatusReportSnsTopic
