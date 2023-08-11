@@ -76,7 +76,7 @@ Resources:
                 Action: 's3:*'
                 Resource:
                   - !If [ CreateBuildBucket, !GetAtt BuildBucket.Arn, !Sub 'arn:aws:s3:::${ExternalBuildBucket}' ]
-                  - !If [ CreateBuildBucket, !Sub '${BuildBucket.Arn}/*', !Sub 'arn:aws:s3:::${ExternalBuildBucket}' ]
+                  - !If [ CreateBuildBucket, !Sub '${BuildBucket.Arn}/*', !Sub 'arn:aws:s3:::${ExternalBuildBucket}/*' ]
               - Effect: Allow
                 Action: codestar-connections:UseConnection
                 Resource: !Ref BuildSourceConnectionArn
