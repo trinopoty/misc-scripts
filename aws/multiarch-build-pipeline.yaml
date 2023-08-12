@@ -30,12 +30,16 @@ Parameters:
   ExternalBuildBucket:
     Type: String
     Default: ''
+  ExternalLogGroup:
+    Type: String
+    Default: ''
   BuildStatusReportSnsTopic:
     Type: String
     Default: ''
 
 Conditions:
   CreateBuildBucket: !Equals [ '', !Ref ExternalBuildBucket ]
+  CreateLogGroup: !Equals [ '', !Ref ExternalLogGroup ]
   EnableBuildStatusReport: !Equals [ '', !Ref BuildStatusReportSnsTopic ]
 
   CreateAmd64Build: !Or [ !Equals [ Ref: BuildArch, 'amd64' ], !Equals [ Ref: BuildArch, 'multi' ] ]
@@ -50,6 +54,7 @@ Resources:
 
   BuildLogs:
     Type: 'AWS::Logs::LogGroup'
+    Condition: CreateLogGroup
     Properties:
       RetentionInDays: 14
 
@@ -91,7 +96,7 @@ Resources:
                 Action:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !GetAtt BuildLogs.Arn
+                Resource: !If [ CreateLogGroup, !GetAtt BuildLogs.Arn, !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ExternalLogGroup}:*' ]
         - PolicyName: Pipeline
           PolicyDocument:
             Version: 2012-10-17
@@ -136,7 +141,7 @@ Resources:
             Value: !If [ CreateMultiArchBuild, '1', '0' ]
       LogsConfig:
         CloudWatchLogs:
-          GroupName: !Ref BuildLogs
+          GroupName: !If [ CreateLogGroup, !Ref BuildLogs, !Ref ExternalLogGroup ]
           Status: ENABLED
       Source:
         Type: CODEPIPELINE
@@ -192,7 +197,7 @@ Resources:
             Value: !If [ CreateMultiArchBuild, '1', '0' ]
       LogsConfig:
         CloudWatchLogs:
-          GroupName: !Ref BuildLogs
+          GroupName: !If [ CreateLogGroup, !Ref BuildLogs, !Ref ExternalLogGroup ]
           Status: ENABLED
       Source:
         Type: CODEPIPELINE
@@ -245,7 +250,7 @@ Resources:
             Value: !Ref BuildImageRepository
       LogsConfig:
         CloudWatchLogs:
-          GroupName: !Ref BuildLogs
+          GroupName: !If [ CreateLogGroup, !Ref BuildLogs, !Ref ExternalLogGroup ]
           Status: ENABLED
       Source:
         Type: CODEPIPELINE
