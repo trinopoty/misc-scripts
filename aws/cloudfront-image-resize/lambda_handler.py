@@ -1,16 +1,16 @@
 import base64
 import hashlib
 import io
-import json
+import logging
 import os.path
-import re
 from urllib.parse import parse_qs
 
 import requests
-from PIL import Image
+from PIL import Image, ImageOps
 
 
-whitelisted_headers = [
+LOGGER = logging.getLogger('CfImageResize')
+WHITELISTED_HEADERS = [
     'last-modified',
     'cache-control',
     'content-type',
@@ -31,6 +31,7 @@ def get_size(query):
 
 def resize_image(image_bytes, size):
     image = Image.open(io.BytesIO(image_bytes))
+    image = ImageOps.exif_transpose(image)
 
     image_w, image_h = image.size
     thumb_w = size[0] if size[0] is not None else image_w
@@ -67,7 +68,7 @@ def build_response(response, content, success):
     
     headers = {}
     for k in response.headers:
-        if k.lower() in whitelisted_headers:
+        if k.lower() in WHITELISTED_HEADERS:
             headers[k.lower()] = [{
                 'value': response.headers[k],
             }]
@@ -92,6 +93,7 @@ def build_response(response, content, success):
 
 
 def lambda_handler(event, context):
+    LOGGER.setLevel(logging.WARN)
     if event['Records'] and len(event['Records']) > 0:
         record = event['Records'][0]
         if 'cf' in record and 'request' in record['cf'] and record['cf']['request'] is not None:
@@ -141,9 +143,12 @@ def lambda_handler(event, context):
                 try:
                     response = requests.get(url, headers=headers, timeout=30)
                     if response.status_code == 200 and response.headers['content-type'] in ['image/png', 'image/jpeg']:
-                        thumbnail = resize_image(response.content, size)
-                        return build_response(response, thumbnail, True)
-                    else:
+                        try:
+                            thumbnail = resize_image(response.content, size)
+                            return build_response(response, thumbnail, True)
+                        except Exception as ex:
+                            LOGGER.exception('Unable to process image: %s', url)
+
                         return build_response(response, response.content, False)
                 except requests.exceptions.Timeout as e:
                     return {
