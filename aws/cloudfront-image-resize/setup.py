@@ -9,4 +9,5 @@ setup(name='Cf Image Resize',
       install_requires=[
           'requests==2.31.0',
           'Pillow==10.2.0',
+          'pillow-avif-plugin==1.4.3',
       ])
