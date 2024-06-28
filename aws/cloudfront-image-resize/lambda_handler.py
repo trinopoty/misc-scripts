@@ -156,7 +156,7 @@ def build_response(response, content, content_type):
 
 
 def lambda_handler(event, context):
-    LOGGER.setLevel(logging.INFO)
+    LOGGER.setLevel(logging.WARNING)
 
     LOGGER.info("Processing request: %s", event)
 

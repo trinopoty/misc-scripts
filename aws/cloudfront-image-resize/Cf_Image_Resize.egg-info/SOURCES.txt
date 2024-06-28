@@ -1,0 +1,7 @@
+lambda_handler.py
+setup.py
+Cf_Image_Resize.egg-info/PKG-INFO
+Cf_Image_Resize.egg-info/SOURCES.txt
+Cf_Image_Resize.egg-info/dependency_links.txt
+Cf_Image_Resize.egg-info/requires.txt
+Cf_Image_Resize.egg-info/top_level.txt
