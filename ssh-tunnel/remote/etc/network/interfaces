@@ -1,6 +1,0 @@
-iface tun101 inet static
-	pre-up sleep 5
-	address 172.16.101.1
-	pointopoint 172.16.101.254
-	netmask 255.255.255.255
-	up arp -sD 172.16.101.254 eth0 pub

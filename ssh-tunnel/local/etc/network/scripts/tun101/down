@@ -1,1 +1,0 @@
-ssh -S /etc/network/scripts/tun101/control-socket -O exit root@remote-host
